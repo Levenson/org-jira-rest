@@ -178,7 +178,7 @@ the values to 'expand'."
 		    (insert (format "** Comment: %s - %s \n"
 				    (apath comment 'author 'displayName)
 				    (org-jira-rest--parse-time (apath comment 'created))))
-		    (insert (format "%s\n\n" (cdr (assoc 'body comment))))))))
+		    (insert (format "%s\n\n" (apath comment 'body)))))))
 	(fill-region 0 (point-max))
 	(indent-region 0 (point-max))))))
 
