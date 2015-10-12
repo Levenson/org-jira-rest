@@ -1,8 +1,11 @@
 ;;; Code:
 
 (require 'cl)
-(require 'org)
 (require 'json)
+(require 'org)
+(require 'url-queue)
+
+(require 'concurrent)
 
 (defvar *debug* t)
 
@@ -11,6 +14,7 @@
 (setq url-proxy-services
       '(("http" . "127.0.0.1:8081")))
 
+(defvar *lock* (cc:semaphore-create 1))
 
 (defun load-auth-info ()
   (let ((jira-pwd-file (expand-file-name "~/.jira-auth-info.el.gpg")))
@@ -82,7 +86,13 @@ the values to 'expand'."
 	  (url-request-data (json-encode query))
 	  (url-request-extra-headers `(("Content-Type" . "application/json")
 				       ("Authorization" . ,*org-jira-rest-auth-info*))))
-      (url-retrieve (concat jira-rest-endpoint "search") 'parse-api-search))))
+      (with-current-buffer (get-buffer-create "*ORG-JIRA-REST*")
+	(erase-buffer)
+	(insert "#+STARTUP: fold")
+	(newline 2)
+	(org-mode)
+	(url-retrieve (concat jira-rest-endpoint "search") 'parse-api-search)
+	(switch-to-buffer (current-buffer))))))
 
 
 (cl-defun parse-api-search (status &optional cbargs)
@@ -138,13 +148,12 @@ the values to 'expand'."
 		(nth 2 final) (nth 1 final))
       (format "<%04d-%02d-%02d>" (nth 5 final) (nth 4 final) (nth 3 final)))))
 
+
 (cl-defun apath (alist &rest path)
   "Walk through alists by theirs keys and return its cdr"
   (reduce (lambda (result item)
-	    (if result
-		(cdr (assoc item result))
-	      (cdr (assoc item alist))))
-	  path :initial-value '()))
+	    (cdr (assoc item result)))
+	  path :initial-value alist))
 
 (cl-defun parse-api-issue (status &optional cbargs)
   (with-current-buffer (current-buffer)
@@ -179,14 +188,13 @@ the values to 'expand'."
 				    (apath comment 'author 'displayName)
 				    (org-jira-rest--parse-time (apath comment 'created))))
 		    (insert (format "%s\n\n" (apath comment 'body)))))))
-	(fill-region 0 (point-max))
-	(indent-region 0 (point-max))))))
+	(indent-region 0 (point-max))
+	(cc:semaphore-with *lock*
+	  (append-to-buffer (get-buffer-create "*ORG-JIRA-REST*") (point-min) (point-max))
+	  (with-current-buffer (get-buffer-create "*ORG-JIRA-REST*")
+	    (org-set-startup-visibility)
+	    (redisplay)))))))
 
-;; (cl-defun merge ()
-;;   (ignore-errors
-;;     (kill-buffer "*ORG-JIRA-REST*"))
-;;   (with-current-buffer (get-buffer-create "*ORG-JIRA-REST*")
-;;     ))
 
 
 (provide 'org-jira-rest)
