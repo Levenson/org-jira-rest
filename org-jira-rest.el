@@ -105,8 +105,9 @@ the values to 'expand'."
 				   (point-max)))
 	   (issues (json-read-from-string data)))
       (mapcar (lambda (issue)
-		(org-jira-rest--api-issue (apath issue 'key) :expand '(comments)))
+		(org-jira-rest--api-issue (apath issue :key) :expand '(comments)))
 	      (cdr (assoc 'issues issues))))))
+
 
 (cl-defun org-jira-rest--api-issue (id-or-key &optional &key
 					      (start-at 0 start-at-p)
@@ -151,9 +152,15 @@ the values to 'expand'."
 
 (cl-defun apath (alist &rest path)
   "Walk through alists by theirs keys and return its cdr"
-  (reduce (lambda (result item)
-	    (cdr (assoc item result)))
-	  path :initial-value alist))
+  (reduce (lambda (result item) (cdr (assoc item result)))
+	  path :initial-value alist :key (lambda (key) (intern (extract-method key)))))
+
+(cl-defun extract-method (keywoard-name)
+  "Convert keywoard-like argument to jira's json key"
+  (let ((pattern-list (split-string (symbol-name keywoard-name) "[:-]" 1)))
+    (mapconcat 'identity (cons
+			  (car pattern-list)
+			  (mapcar 'capitalize (cdr pattern-list))) "")))
 
 (cl-defun parse-api-issue (status &optional cbargs)
   (with-current-buffer (current-buffer)
@@ -164,30 +171,34 @@ the values to 'expand'."
     (let* ((data (buffer-substring (search-forward-regexp "^$")
 				   (point-max)))
 	   (issue (json-read-from-string data)))
-      (ignore-errors
-	(kill-buffer (format "*ORG-JIRA-REST--%s*" (apath issue 'key))))
-      (with-current-buffer (get-buffer-create (format "*ORG-JIRA-REST--%s*" (apath issue 'key)))
+      (with-current-buffer (get-buffer-create (format "*%s*" (apath issue :key)))
+	(erase-buffer)
 	(org-mode)
-	(let ((fields (apath issue 'fields)))
-	  (insert (format "* %s - %s\n"
-			  (apath issue 'key)
-			  (apath fields 'summary)))
+	(let ((fields (apath issue :fields)))
+	  (insert (format "* %s - %s"
+			  (apath issue :key)
+			  (apath fields :summary)))
+	  (newline)
 	  (save-excursion
 	    (org-insert-property-drawer)
-	    (when (apath fields 'duedate)
-	      (org-set-property "duedate" (org-jira-rest--parse-time (apath fields 'duedate))))
-	    (org-set-property "created" (org-jira-rest--parse-time (apath fields 'created)))
-	    (org-set-property "assignee" (apath fields 'assignee 'emailAddress))
-	    (org-set-property "reporter" (apath fields 'reporter 'emailAddress))
-	    (org-set-property "status" (apath fields 'status 'name)))
-	  (insert (format "\n%s\n\n" (apath fields 'description)))
+	    (when (apath fields :duedate)
+	      (org-set-property "duedate" (org-jira-rest--parse-time (apath fields :duedate))))
+	    (org-set-property "created" (org-jira-rest--parse-time (apath fields :created)))
+	    (org-set-property "assignee" (apath fields :assignee :email-address))
+	    (org-set-property "reporter" (apath fields :reporter :email-address))
+	    (org-set-property "status" (apath fields :status :name)))
+	  (when (apath fields :description)
+	    (newline)
+	    (insert (format "%s" (apath fields :description)))
+	    (newline))
 	  (let ((comments (apath fields 'comment 'comments)))
 	    (loop for comment being the elements of comments do
 		  (progn
-		    (insert (format "** Comment: %s - %s \n"
-				    (apath comment 'author 'displayName)
-				    (org-jira-rest--parse-time (apath comment 'created))))
-		    (insert (format "%s\n\n" (apath comment 'body)))))))
+		    (insert (format "** Comment: %s - %s"
+				    (apath comment :author :display-name)
+				    (org-jira-rest--parse-time (apath comment :created))))
+		    (newline)
+		    (insert (format "%s\n\n" (apath comment :body)))))))
 	(indent-region 0 (point-max))
 	(cc:semaphore-with *lock*
 	  (append-to-buffer (get-buffer-create "*ORG-JIRA-REST*") (point-min) (point-max))
