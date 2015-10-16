@@ -28,60 +28,49 @@
 	(setq *org-jira-rest-auth-info* (concat "Basic " enc)))
     (message "You must provide your login information.")))
 
-(defun parse-rest-kv (key-value-list)
-  (cl-loop for pos from 0 below (length rest)
-	   when (evenp pos) collect
-	   (list (nth pos rest)
-		 (nth (+ 1 pos) rest))))
+
+(defun apath (alist &rest path)
+  "Walk through alists 'alist' by the path 'path' return its
+cdr."
+  (reduce (lambda (result item) (cdr (assoc item result))) path
+	  :initial-value alist
+	  :key (lambda (key) (intern (jira-keyword key)))))
+
+(defun jira-keyword (keyword)
+  "Convert keyword-like argument to Jira's json key."
+  (let ((pattern-list (split-string (symbol-name keyword) "[:-]" 1)))
+    (mapconcat 'identity (cons
+			  (car pattern-list)
+			  (mapcar 'capitalize (cdr pattern-list))) "")))
+
+(defun jira-key-value-pair (keyword value)
+  (cons (jira-keyword keyword)
+	(case value
+	  ((t) "true")
+	  ((nil) (unless (member keyword '(fields expand)) "false"))
+	  (t value))))
+
+(defun jira-rest--function-arguments ()
+  "Look through backtrace to extract function arguments"
+  (let* ((frame-index 1))
+    (while (not (car (backtrace-frame frame-index)))
+      (incf frame-index))
+    (let ((locals (backtrace--locals (incf frame-index))))
+      (loop for key-value in locals
+	    ;; We need to ignore -p variables
+	    when (and (not (string-suffix-p "-p" (symbol-name (car key-value))))
+		      (cdr key-value))
+	    collect (jira-key-value-pair (car key-value) (cdr key-value))))))
 
 (cl-defun org-jira-rest--api-search (jql &optional &key
-					 (start-at 0 start-at-p)
-					 (max-results 50 max-results-p)
-					 (validate-query t validate-query-p)
+					 (start-at 0)
+					 (max-results 50)
+					 (validate-query t)
 					 (fields)
 					 (expand))
-  "Searches for issues using JQL.
-
-Sorting the 'jql' parameter is a full JQL expression, and
-includes an ORDER BY clause.
-
-The 'fields' param (which can be specified multiple times) gives
-a list of fields to include in the response. This can be used to
-retrieve a subset of fields. A particular field can be excluded
-by prefixing it with a minus.
-
-By default, only navigable (*navigable) 'fields' are returned in
-this search resource. Note: the default is different in the
-get-issue resource -- the default there all 'fields' (*all).
-
-*all - include all fields
-*navigable - include just navigable fields
-summary,comment - include just the summary and comments
--description - include navigable fields except the
- description (the default is *navigable for search)
-*all,-comment - include everything except comments
-
-GET vs POST: If the JQL query is too large to be encoded as a
-query param you should instead POST to this resource.
-
-Expanding Issues in the Search Result: It is possible to expand
-the issues returned by directly specifying the expansion on the
-'expand' parameter passed in to this resources.
-
-For instance, to expand the _changelog_ for all the issues on the
-search result, it is neccesary to specify _changelog_ as one of
-the values to 'expand'."
-  (let ((query (list (cons "jql" jql))))
-    (when start-at-p
-      (push (cons "startAt" start-at) query))
-    (when max-results-p
-      (push (cons "maxResults" max-results) query))
-    (when validate-query-p
-      (push (cons "validateQuery" (if validate-query "true" "false")) query))
-    (when fields
-      (push (cons "fields" fields) query))
-    (when expand
-      (push (cons "expand" expand) query))
+  "Searches for issues using JQL."
+  (let ((query (jira-rest--function-arguments)))
+    (push (cons "jql" jql) query)
     (let ((url-request-method "POST")
 	  (url-request-data (json-encode query))
 	  (url-request-extra-headers `(("Content-Type" . "application/json")
@@ -95,6 +84,19 @@ the values to 'expand'."
 	(switch-to-buffer (current-buffer))))))
 
 
+(cl-defun org-jira-rest--api-issue (id-or-key &optional &key
+					      (start-at 0)
+					      (max-results 50)
+					      (validate-query t)
+					      (fields)
+					      (expand))
+  (let* ((query (jira-rest--function-arguments))
+	 (url-request-method "GET")
+	 (url-request-data (json-encode query))
+	 (url-request-extra-headers `(("Authorization" . ,*org-jira-rest-auth-info*))))
+    (url-retrieve (concat jira-rest-endpoint "issue" "/" id-or-key) 'parse-api-issue)))
+
+
 (cl-defun parse-api-search (status &optional cbargs)
   (with-current-buffer (current-buffer)
     (zlib-decompress-region (point-min) (point-max))
@@ -106,31 +108,7 @@ the values to 'expand'."
 	   (issues (json-read-from-string data)))
       (mapcar (lambda (issue)
 		(org-jira-rest--api-issue (apath issue :key) :expand '(comments)))
-	      (cdr (assoc 'issues issues))))))
-
-
-(cl-defun org-jira-rest--api-issue (id-or-key &optional &key
-					      (start-at 0 start-at-p)
-					      (max-results 50 max-results-p)
-					      (validate-query t validate-query-p)
-					      (fields)
-					      (expand)
-					      (method "GET"))
-  (let ((query '()))
-    (when start-at-p
-      (push (cons "startAt" start-at) query))
-    (when max-results-p
-      (push (cons "maxResults" max-results) query))
-    (when validate-query-p
-      (push (cons "validateQuery" (if validate-query "true" "false")) query))
-    (when fields
-      (push (cons "fields" fields) query))
-    (when expand
-      (push (cons "expand" expand) query))
-    (let ((url-request-method method)
-	  (url-request-data (json-encode query))
-	  (url-request-extra-headers `(("Authorization" . ,*org-jira-rest-auth-info*))))
-      (url-retrieve (concat jira-rest-endpoint "issue" "/" id-or-key) 'parse-api-issue))))
+	      (apath issues :issues)))))
 
 
 (cl-defun org-jira-rest--parse-time (string)
@@ -149,18 +127,6 @@ the values to 'expand'."
 		(nth 2 final) (nth 1 final))
       (format "<%04d-%02d-%02d>" (nth 5 final) (nth 4 final) (nth 3 final)))))
 
-
-(cl-defun apath (alist &rest path)
-  "Walk through alists by theirs keys and return its cdr"
-  (reduce (lambda (result item) (cdr (assoc item result)))
-	  path :initial-value alist :key (lambda (key) (intern (extract-method key)))))
-
-(cl-defun extract-method (keywoard-name)
-  "Convert keywoard-like argument to jira's json key"
-  (let ((pattern-list (split-string (symbol-name keywoard-name) "[:-]" 1)))
-    (mapconcat 'identity (cons
-			  (car pattern-list)
-			  (mapcar 'capitalize (cdr pattern-list))) "")))
 
 (cl-defun parse-api-issue (status &optional cbargs)
   (with-current-buffer (current-buffer)
