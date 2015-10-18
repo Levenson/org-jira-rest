@@ -136,14 +136,22 @@ cdr."
     ;; since we won't get a 'response' back.
     (let* ((data (buffer-substring (search-forward-regexp "^$")
 				   (point-max)))
+	   (content-encoding
+	    (or (reduce (lambda (result p)
+			  (when (string-prefix-p "charset=" p)
+			    (intern (downcase (cadr (split-string p "="))))))
+			(split-string
+			 (buffer-local-value 'url-http-content-type (current-buffer)) ";"))
+		'utf-8))
 	   (issue (json-read-from-string data)))
       (with-current-buffer (get-buffer-create (format "*%s*" (apath issue :key)))
 	(erase-buffer)
 	(org-mode)
 	(let ((fields (apath issue :fields)))
-	  (insert (format "* %s - %s"
-			  (apath issue :key)
-			  (apath fields :summary)))
+	  (insert (decode-coding-string (format "* %s - %s"
+						(apath issue :key)
+						(apath fields :summary))
+					content-encoding))
 	  (newline)
 	  (save-excursion
 	    (org-insert-property-drawer)
@@ -155,16 +163,21 @@ cdr."
 	    (org-set-property "status" (apath fields :status :name)))
 	  (when (apath fields :description)
 	    (newline)
-	    (insert (format "%s" (apath fields :description)))
+	    (insert (decode-coding-string (apath fields :description) content-encoding))
 	    (newline))
 	  (let ((comments (apath fields 'comment 'comments)))
 	    (loop for comment being the elements of comments do
 		  (progn
-		    (insert (format "** Comment: %s - %s"
-				    (apath comment :author :display-name)
-				    (org-jira-rest--parse-time (apath comment :created))))
+		    (insert (decode-coding-string
+			     (format "** Comment: %s - %s"
+				     (apath comment :author :display-name)
+				     (org-jira-rest--parse-time (apath comment :created)))
+			     content-encoding))
 		    (newline)
-		    (insert (format "%s\n\n" (apath comment :body)))))))
+		    (insert (decode-coding-string (apath comment :body)
+						  content-encoding))
+		    (newline)
+		    (newline)))))
 	(indent-region 0 (point-max))
 	(cc:semaphore-with *lock*
 	  (append-to-buffer (get-buffer-create "*ORG-JIRA-REST*") (point-min) (point-max))
